@@ -1,5 +1,14 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { onAuthStateChanged, signInWithPopup, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut } from 'firebase/auth';
+import { 
+  onAuthStateChanged, 
+  signInWithPopup, 
+  signInWithRedirect,
+  getRedirectResult,
+  signInWithEmailAndPassword, 
+  createUserWithEmailAndPassword, 
+  signOut,
+  GoogleAuthProvider 
+} from 'firebase/auth';
 import { auth, googleProvider } from '../config/firebase';
 
 const AuthContext = createContext(null);
@@ -15,6 +24,20 @@ export const AuthProvider = ({ children }) => {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    // Cek hasil redirect login (untuk mobile)
+    getRedirectResult(auth).then((result) => {
+      if (result) {
+        const credential = GoogleAuthProvider.credentialFromResult(result);
+        const oauthToken = credential?.accessToken || result._tokenResponse?.oauthAccessToken;
+        if (oauthToken) {
+          localStorage.setItem('google_access_token', oauthToken);
+          sessionStorage.setItem('google_access_token', oauthToken);
+        }
+      }
+    }).catch((err) => {
+      console.warn('Redirect result error:', err);
+    });
+
     const unsubscribe = onAuthStateChanged(auth, (currentUser) => {
       setUser(currentUser);
       setLoading(false);
@@ -24,19 +47,26 @@ export const AuthProvider = ({ children }) => {
 
   const loginWithGoogle = async () => {
     try {
+      // Coba popup dulu (desktop)
       const result = await signInWithPopup(auth, googleProvider);
-      // Simpan access token Google untuk API Sheets
-      const credential = await result.user.getIdTokenResult();
-      // Access token dari Google provider
-      const googleCredential = result._tokenResponse;
-      if (googleCredential?.oauthAccessToken) {
-        sessionStorage.setItem('google_access_token', googleCredential.oauthAccessToken);
+      
+      const credential = GoogleAuthProvider.credentialFromResult(result);
+      const oauthToken = credential?.accessToken || result._tokenResponse?.oauthAccessToken;
+      if (oauthToken) {
+        localStorage.setItem('google_access_token', oauthToken);
+        sessionStorage.setItem('google_access_token', oauthToken);
       }
       return result.user;
     } catch (error) {
-      // Handle popup closed
-      if (error.code === 'auth/popup-closed-by-user') {
-        throw new Error('Login dibatalkan');
+      // Kalau popup gagal/diblokir, pakai redirect
+      if (
+        error.code === 'auth/popup-blocked' || 
+        error.code === 'auth/popup-closed-by-user' ||
+        error.code === 'auth/cancelled-popup-request'
+      ) {
+        // Fallback ke redirect (berfungsi di mobile & browser yang blokir popup)
+        await signInWithRedirect(auth, googleProvider);
+        return null;
       }
       throw error;
     }
@@ -51,6 +81,7 @@ export const AuthProvider = ({ children }) => {
   };
 
   const logout = async () => {
+    localStorage.removeItem('google_access_token');
     sessionStorage.removeItem('google_access_token');
     return await signOut(auth);
   };
